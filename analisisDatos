@@ -1,0 +1,458 @@
+import os
+import traceback
+import threading
+from tkinter import ttk
+import pandas as pd
+from matplotlib.backends.backend_pdf import PdfPages
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from PyPDF2 import PdfReader, PdfWriter
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Spacer, PageBreak
+from reportlab.lib import colors
+from reportlab.platypus.para import Paragraph
+from statsmodels.tsa.holtwinters import ExponentialSmoothing
+import tkinter as tk
+from tkinter import messagebox
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def calcular_datos():
+    try:
+        print("Cargando datos...")
+        # Cargar los datos de ventas y productos
+        df_ventas_2021 = pd.read_csv('C:/Users/magan/OneDrive/Documentos/Curso David/TFM/ventas_2021.csv')
+        df_ventas_2022 = pd.read_csv('C:/Users/magan/OneDrive/Documentos/Curso David/TFM/ventas_2022.csv')
+        df_ventas_2023 = pd.read_csv('C:/Users/magan/OneDrive/Documentos/Curso David/TFM/ventas_2023.csv')
+        df_ventas_2024 = pd.read_csv('C:/Users/magan/OneDrive/Documentos/Curso David/TFM/ventas_2024.csv')
+        df_productos = pd.read_csv('C:/Users/magan/OneDrive/Documentos/Curso David/TFM/Lista_productos.csv')
+        print(f"Tamaño df_ventas_2022: {df_ventas_2022.shape}")
+        print(f"Tamaño df_ventas_2023: {df_ventas_2023.shape}")
+        print(f"Tamaño df_ventas_2024: {df_ventas_2024.shape}")
+        print(f"Tamaño df_productos: {df_productos.shape}")
+        # Paso 1: Agrupar por idProducto y sumar la cantidad vendida para cada año
+        ventas_2021_grouped = df_ventas_2021.groupby('idProducto', as_index=False)['cantidadVendida'].sum()
+        ventas_2022_grouped = df_ventas_2022.groupby('idProducto', as_index=False)['cantidadVendida'].sum()
+        ventas_2023_grouped = df_ventas_2023.groupby('idProducto', as_index=False)['cantidadVendida'].sum()
+        ventas_2024_grouped = df_ventas_2024.groupby('idProducto', as_index=False)['cantidadVendida'].sum()
+        # Renombrar columnas después del agrupamiento
+        ventas_2021_grouped.rename(columns={'cantidadVendida': '2021_cantidad'}, inplace=True)
+        ventas_2022_grouped.rename(columns={'cantidadVendida': '2022_cantidad'}, inplace=True)
+        ventas_2023_grouped.rename(columns={'cantidadVendida': '2023_cantidad'}, inplace=True)
+        ventas_2024_grouped.rename(columns={'cantidadVendida': '2024_cantidad'}, inplace=True)
+        # Paso 2: Unir las ventas de los 4 años en un solo dataframe
+        df_ventas = ventas_2021_grouped.merge(ventas_2022_grouped, on='idProducto', how='outer')
+        df_ventas = df_ventas.merge(ventas_2023_grouped, on='idProducto', how='outer')
+        df_ventas = df_ventas.merge(ventas_2024_grouped, on='idProducto', how='outer').fillna(0)
+        # Paso 3: Añadir los datos de precios desde df_productos
+        df_ventas = df_ventas.merge(df_productos[['idProducto', 'precioVenta']], on='idProducto', how='left')
+        # Paso 4: Calcular las ventas totales para cada producto en cada año
+        df_ventas['2021_total'] = df_ventas['2021_cantidad'] * df_ventas['precioVenta']
+        df_ventas['2022_total'] = df_ventas['2022_cantidad'] * df_ventas['precioVenta']
+        df_ventas['2023_total'] = df_ventas['2023_cantidad'] * df_ventas['precioVenta']
+        df_ventas['2024_total'] = df_ventas['2024_cantidad'] * df_ventas['precioVenta']
+        print(f"Datos calculados: {df_ventas.head()}")
+        # Paso 5: Calcular las ventas totales por categoría
+        df_productos_sales = df_productos.merge(df_ventas[['idProducto', '2021_total', '2022_total', '2023_total', '2024_total']], on='idProducto', how='left')
+        df_productos_sales.fillna(0, inplace=True)
+        df_productos_sales['total_sales'] = df_productos_sales['2021_total'] + df_productos_sales['2022_total'] + df_productos_sales['2023_total'] + df_productos_sales['2024_total']
+        df_categorias = df_productos_sales.groupby('categoriaProducto', as_index=False).agg({'total_sales': 'sum'}).sort_values(by='total_sales', ascending=False)
+
+        print(f"Ventas por categoría: {df_categorias.head()}")
+
+        return df_ventas, df_categorias
+
+    except Exception as e:
+        print("Error en calcular_datos:")
+        traceback.print_exc()
+        return pd.DataFrame(), pd.DataFrame()
+
+
+# Define el estilo del título
+styles = getSampleStyleSheet()
+TitleStyle = ParagraphStyle(
+    'TitleStyle',
+    parent=styles['Title'],
+    fontName='Helvetica-Bold',
+    fontSize=16,
+    spaceAfter=12
+)
+
+
+def generar_pdf():
+    try:
+        global df_ventas_final, df_categorias
+        # Ruta del archivo PDF temporal
+        pdf_temp_filename = "temp_informe_ventas.pdf"
+        doc = SimpleDocTemplate(pdf_temp_filename, pagesize=letter)
+        elements = []
+        # Estilo para el título
+        styles = getSampleStyleSheet()
+        TitleStyle = styles['Title']
+        # Título del PDF
+        elements.append(Paragraph("Informe de Ventas y Categorías", style=TitleStyle))
+        elements.append(Spacer(1, 12))
+        # Datos de Ventas Finales
+        data_ventas = [["Número de Producto", "2021", "Ventas 2021", "2022", "Ventas 2022", "2023", "Ventas 2023", "2024", "Ventas 2024"]]
+        for index, row in df_ventas_final.iterrows():
+            data_ventas.append([
+                row['idProducto'],
+                "2021",
+                f"{row['2021_total']:.2f} €",
+                "2022",
+                f"{row['2022_total']:.2f} €",
+                "2023",
+                f"{row['2023_total']:.2f} €",
+                "2024",
+                f"{row['2024_total']:.2f} €"
+            ])
+        # Crear la tabla de ventas
+        table_ventas = Table(data_ventas)
+        table_ventas.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ]))
+        elements.append(table_ventas)
+        elements.append(Spacer(1, 24))
+
+        # Datos de Categorías
+        data_categorias = [["Categoría", "Ventas Totales"]]
+        for index, row in df_categorias.iterrows():
+            data_categorias.append([
+                row['categoriaProducto'],
+                f"{row['total_sales']:.2f} €"
+            ])
+
+        # Crear la tabla de categorías
+        table_categorias = Table(data_categorias)
+        table_categorias.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ]))
+
+        elements.append(PageBreak())
+        elements.append(table_categorias)
+        elements.append(Spacer(4, 24))
+
+        # Añadir el gráfico al PDF
+        anadir_grafico_pdf(pdf_temp_filename)
+
+        # Construir el documento
+        doc.build(elements)
+        print("PDF generado con éxito.")
+
+    except Exception as e:
+        print("Error al generar PDF:")
+        traceback.print_exc()
+
+
+def anadir_grafico_pdf(pdf_temp_filename):
+    try:
+        # Crear un PDF con el gráfico
+        pdf_graph_filename = "grafico.pdf"
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.bar(df_categorias['categoriaProducto'], df_categorias['total_sales'])
+        ax.set_xlabel('Categoría', fontsize=12)
+        ax.set_ylabel('Ventas Totales', fontsize=12)
+        ax.set_title('Ventas Totales por Categoría', fontsize=14)
+        plt.xticks(rotation=90, fontsize=10)
+        fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.2)
+
+        # Guardar gráfico como PDF
+        pdf_pages = PdfPages(pdf_graph_filename)
+        pdf_pages.savefig(fig)
+        pdf_pages.close()
+
+        # Combinar el PDF con las tablas y el gráfico
+        pdf_writer = PdfWriter()
+
+        # Leer el PDF temporal con las tablas
+        with open(pdf_temp_filename, 'rb') as f:
+            pdf_reader = PdfReader(f)
+            for page in pdf_reader.pages:
+                pdf_writer.add_page(page)
+
+        # Leer el PDF con el gráfico
+        with open(pdf_graph_filename, 'rb') as f:
+            pdf_reader = PdfReader(f)
+            for page in pdf_reader.pages:
+                pdf_writer.add_page(page)
+
+        # Guardar el PDF final combinado
+        pdf_final_filename = "informe_ventas_final.pdf"
+        with open(pdf_final_filename, 'wb') as f:
+            pdf_writer.write(f)
+        print("PDF final combinado generado con éxito.")
+
+        # Eliminar archivos temporales
+        os.remove(pdf_temp_filename)
+        os.remove(pdf_graph_filename)
+        print("PDF temporales eliminados.")
+
+    except Exception as e:
+        print("Error al añadir gráfico al PDF:")
+        traceback.print_exc()
+
+
+def mostrar_datos():
+    try:
+        global df_ventas_final, df_categorias
+        df_ventas_final, df_categorias = calcular_datos()
+
+        if not df_ventas_final.empty:
+            print("Mostrando datos de ventas...")
+
+            for row in tree.get_children():
+                tree.delete(row)
+
+            for index, row in df_ventas_final.iterrows():
+                tree.insert("", tk.END, values=(row['idProducto'], row['2021_total'], row['2022_total'], row['2023_total'], row['2024_total']))
+
+        if not df_categorias.empty:
+            print("Mostrando datos de categorías...")
+
+            for row in tree_categorias.get_children():
+                tree_categorias.delete(row)
+
+            for index, row in df_categorias.iterrows():
+                tree_categorias.insert("", tk.END, values=(row['categoriaProducto'], row['total_sales']))
+
+            # Generar gráfico de ventas por categoría en el hilo principal
+            generar_grafico(df_categorias)
+
+    except Exception as e:
+        print("Error en mostrar_datos:")
+        traceback.print_exc()
+
+
+def generar_grafico(df_categorias):
+    try:
+        # Graficar datos de categorías
+        fig, ax = plt.subplots(figsize=(12, 6))  # Ajusta el tamaño de la figura si es necesario
+        ax.bar(df_categorias['categoriaProducto'], df_categorias['total_sales'])
+        ax.set_xlabel('Categoría', fontsize=12)
+        ax.set_ylabel('Ventas Totales', fontsize=12)
+        ax.set_title('Ventas Totales por Categoría', fontsize=14)
+        plt.xticks(rotation=90, fontsize=10)  # Ajusta el tamaño de la fuente de las etiquetas x
+
+        # Ajustar márgenes
+        fig.subplots_adjust(left=0.1, right=0.9, top=0.9, bottom=0.2)
+
+        # Mostrar el gráfico en la ventana Tkinter
+        canvas = FigureCanvasTkAgg(fig, master=frame_grafico)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+    except Exception as e:
+        print("Error al generar gráfico:")
+        traceback.print_exc()
+
+
+def predecir_ventas(df_ventas, num_periodos=12):
+    predicciones = {}
+
+    # Iterar sobre cada producto para realizar la predicción
+    for index, row in df_ventas.iterrows():
+        id_producto = row['idProducto']
+        # Datos de ventas históricos (2021, 2022, 2023)
+        ventas_historicas = [row['2021_cantidad'], row['2022_cantidad'], row['2023_cantidad']]
+
+        # Aplicar Holt-Winters
+        modelo = ExponentialSmoothing(ventas_historicas, trend="add", seasonal=None)
+        modelo_ajustado = modelo.fit()
+
+        # Predecir las ventas para los próximos 12 meses
+        predicciones_producto = modelo_ajustado.forecast(num_periodos)
+
+        # Asegurarse de que las predicciones no sean negativas
+        predicciones_producto = np.maximum(0, predicciones_producto)
+
+        predicciones[id_producto] = predicciones_producto
+
+    return predicciones
+
+
+def crear_dataframe_predicciones(df_ventas, predicciones):
+    predicciones_df = pd.DataFrame(predicciones).T
+    predicciones_df.columns = [f'Mes_{i+1}' for i in range(predicciones_df.shape[1])]
+    predicciones_df['idProducto'] = predicciones_df.index  #
+    return predicciones_df
+
+
+def generar_pdf_predicciones_reportlab(df_predicciones, filename='predicciones_ventas_2025.pdf'):
+    # Crear el documento PDF
+    pdf = SimpleDocTemplate(filename, pagesize=A4)
+    elementos = []
+
+    # Estilo del título
+    estilo_titulo = getSampleStyleSheet()['Title']
+    titulo = Paragraph("Previsión de Ventas 2025", estilo_titulo)
+    elementos.append(titulo)
+
+    # Convertir el DataFrame a lista para usar en las tablas
+    data_enero_junio = [['idProducto', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio']]
+    data_julio_diciembre = [['idProducto', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre']]
+
+    # Añadir los datos de predicciones al DataFrame
+    for index, row in df_predicciones.iterrows():
+        data_enero_junio.append([
+            row['idProducto'],
+            round(row['Mes_1']),
+            round(row['Mes_2']),
+            round(row['Mes_3']),
+            round(row['Mes_4']),
+            round(row['Mes_5']),
+            round(row['Mes_6'])
+        ])
+        data_julio_diciembre.append([
+            row['idProducto'],
+            round(row['Mes_7']),
+            round(row['Mes_8']),
+            round(row['Mes_9']),
+            round(row['Mes_10']),
+            round(row['Mes_11']),
+            round(row['Mes_12'])
+        ])
+
+    # Crear las tablas
+    tabla_enero_junio = Table(data_enero_junio)
+    tabla_julio_diciembre = Table(data_julio_diciembre)
+
+    # Estilo para las tablas
+    estilo_tablas = TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),  # Fondo del encabezado
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),  # Color del texto del encabezado
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),  # Alineación de todas las celdas
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),  # Fuente en negrita para el encabezado
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),  # Espaciado inferior en el encabezado
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),  # Fondo para las celdas del cuerpo
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),  # Añadir bordes a la tabla
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),  # Espaciado de los lados
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+    ])
+
+    # Aplicar estilo a las tablas
+    tabla_enero_junio.setStyle(estilo_tablas)
+    tabla_julio_diciembre.setStyle(estilo_tablas)
+
+    # Añadir las tablas al documento
+    elementos.append(tabla_enero_junio)
+    elementos.append(PageBreak())
+    elementos.append(tabla_julio_diciembre)
+
+    # Generar el PDF
+    pdf.build(elementos)
+    print(f"PDF generado: {filename}")
+
+
+
+def obtener_nombre_mes(mes):
+    meses = {
+        1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril",
+        5: "Mayo", 6: "Junio", 7: "Julio", 8: "Agosto",
+        9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+    }
+    return meses[mes]
+
+
+# Definir la función que genera el PDF
+def generar_y_abrir_pdf():
+    try:
+        # Calcular datos
+        df_ventas, df_categorias = calcular_datos()
+        # Realizar predicciones
+        predicciones = predecir_ventas(df_ventas)
+        # Crear DataFrame de predicciones
+        df_predicciones = crear_dataframe_predicciones(df_ventas, predicciones)
+        # Generar el PDF
+        generar_pdf_predicciones_reportlab(df_predicciones)
+    except Exception as e:
+        messagebox.showerror("Error", str(e))
+
+
+# Cambiamos la llamada a cargar_datos_en_thread
+def cargar_datos_en_thread():
+    thread = threading.Thread(target=mostrar_datos)
+    thread.start()
+
+
+# Crear la ventana principal
+root = tk.Tk()
+root.title("Ventas por Producto y Categoría")
+root.state('zoomed')
+
+# Configurar la cuadrícula de 4x4
+for i in range(4):
+    root.grid_rowconfigure(i, weight=1)
+    root.grid_columnconfigure(i, weight=1)
+
+# Crear un frame para la tabla de ventas por producto (cuadrante superior izquierdo)
+frame_tabla = tk.Frame(root)
+frame_tabla.grid(row=0, column=0, sticky="nsew")
+
+tree = ttk.Treeview(frame_tabla, columns=("ID Producto", "2022", "2023", "2024"), show="headings")
+tree.heading("ID Producto", text="ID Producto")
+tree.heading("2022", text="2022")
+tree.heading("2023", text="2023")
+tree.heading("2024", text="2024")
+
+scrollbar = ttk.Scrollbar(frame_tabla, orient="vertical", command=tree.yview)
+tree.configure(yscrollcommand=scrollbar.set)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+tree.pack(fill=tk.BOTH, expand=True)
+
+# Crear un frame para la tabla de ventas por categoría (cuadrante superior derecho)
+frame_categorias = tk.Frame(root)
+frame_categorias.grid(row=0, column=1, sticky="nsew")
+
+tree_categorias = ttk.Treeview(frame_categorias, columns=("Categoría", "Ventas Totales"), show="headings")
+tree_categorias.heading("Categoría", text="Categoría")
+tree_categorias.heading("Ventas Totales", text="Ventas Totales")
+
+scrollbar_cat = ttk.Scrollbar(frame_categorias, orient="vertical", command=tree_categorias.yview)
+tree_categorias.configure(yscrollcommand=scrollbar_cat.set)
+scrollbar_cat.pack(side=tk.RIGHT, fill=tk.Y)
+tree_categorias.pack(fill=tk.BOTH, expand=True)
+
+# Crear un frame para el gráfico (cuadrante inferior izquierdo)
+frame_grafico = tk.Frame(root)
+frame_grafico.grid(row=1, column=0, sticky="nsew")
+
+# Crear el botón en el cuadrante inferior derecho
+frame_boton = tk.Frame(root)
+frame_boton.grid(row=1, column=1, sticky="nsew")
+
+# Botón para generar el informe
+boton_generar_informe = tk.Button(frame_boton, text="Generar informe", command=generar_pdf, font=("Helvetica", 14))
+boton_generar_informe.pack(pady=20)
+
+# Botón para la previsión de ventas futuras
+boton_prevision = tk.Button(frame_boton, text="Previsión de ventas futuras", command=generar_y_abrir_pdf, font=("Helvetica", 14))
+boton_prevision.pack(pady=20)
+
+# Cargar y mostrar los datos al abrir el programa en un hilo separado
+cargar_datos_en_thread()
+
+# Ejecutar la aplicación
+root.mainloop()
